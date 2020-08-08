@@ -14,7 +14,7 @@ const (
 	// DefaultCloudEventType is the default event type for an Dapr published event
 	DefaultCloudEventType = "com.dapr.event.sent"
 	// CloudEventsSpecVersion is the specversion used by Dapr for the cloud events implementation
-	CloudEventsSpecVersion = "0.3"
+	CloudEventsSpecVersion = "1.0"
 	//ContentType is the Cloud Events HTTP content type
 	ContentType = "application/cloudevents+json"
 	// DefaultCloudEventSource is the default event source
@@ -31,21 +31,12 @@ type CloudEventsEnvelope struct {
 	DataContentType string      `json:"datacontenttype"`
 	Data            interface{} `json:"data"`
 	Subject         string      `json:"subject"`
+	Topic           string      `json:"topic"`
 }
 
 // NewCloudEventsEnvelope returns CloudEventsEnvelope from data or a new one when data content was not
-func NewCloudEventsEnvelope(id, source, eventType, subject string, data []byte) *CloudEventsEnvelope {
-	var ce CloudEventsEnvelope
-	err := jsoniter.Unmarshal(data, &ce)
-
-	if err == nil && ce.ID != "" && ce.SpecVersion != "" && ce.Type != "" && ce.Source != "" && ce.DataContentType != "" {
-		// data was already CloudEvent
-		// assuming the likelihood of other structures having all these
-		//CloudEvent-specific fields is very unlikely
-		return &ce
-	}
-
-	// ensure valid input parameters
+func NewCloudEventsEnvelope(id, source, eventType, subject string, topic string, data []byte) *CloudEventsEnvelope {
+	// defaults
 	if id == "" {
 		id = uuid.New().String()
 	}
@@ -55,22 +46,66 @@ func NewCloudEventsEnvelope(id, source, eventType, subject string, data []byte) 
 	if eventType == "" {
 		eventType = DefaultCloudEventType
 	}
+	if subject == "" {
+		subject = DefaultCloudEventSource
+	}
 
-	// create new envelope
-	ce = CloudEventsEnvelope{
+	// check if JSON
+	var j interface{}
+	err := jsoniter.Unmarshal(data, &j)
+	if err != nil {
+		// not JSON, return new envelope
+		return &CloudEventsEnvelope{
+			ID:              id,
+			SpecVersion:     CloudEventsSpecVersion,
+			DataContentType: "text/plain",
+			Source:          source,
+			Type:            eventType,
+			Subject:         subject,
+			Topic:           topic,
+			Data:            string(data),
+		}
+	}
+
+	// handle CloudEvent
+	m, isMap := j.(map[string]interface{})
+	if isMap {
+		if _, isCE := m["specversion"]; isCE {
+			ce := &CloudEventsEnvelope{
+				ID:              getStrVal(m, "id"),
+				SpecVersion:     getStrVal(m, "specversion"),
+				DataContentType: getStrVal(m, "datacontenttype"),
+				Source:          getStrVal(m, "source"),
+				Type:            getStrVal(m, "type"),
+				Subject:         getStrVal(m, "subject"),
+				Topic:           topic,
+				Data:            m["data"],
+			}
+			// check if CE is valid
+			if ce.ID != "" && ce.SpecVersion != "" && ce.DataContentType != "" {
+				return ce
+			}
+		}
+	}
+
+	// content was JSON but not a valid CloudEvent, make one
+	return &CloudEventsEnvelope{
 		ID:              id,
 		SpecVersion:     CloudEventsSpecVersion,
 		DataContentType: "application/json",
 		Source:          source,
 		Type:            eventType,
 		Subject:         subject,
+		Topic:           topic,
+		Data:            j,
 	}
+}
 
-	// if content was not JSON, set data and its type to text
-	if err != nil {
-		ce.Data = string(data)
-		ce.DataContentType = "text/plain"
+func getStrVal(m map[string]interface{}, key string) string {
+	if v, k := m[key]; k {
+		if s, ok := v.(string); ok {
+			return s
+		}
 	}
-
-	return &ce
+	return ""
 }
